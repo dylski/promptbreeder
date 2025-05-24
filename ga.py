@@ -6,10 +6,15 @@ import json # Import json for saving data
 from typing import List, Callable, Tuple, Any
 from ollama import Client # For type hinting
 
-# Import utility functions for LLM calls, mutation prompts, and thinking styles
+# Import utility functions for LLM calls
 from llm_utils import call_llm, get_llm_client
-from mutation_prompts import get_random_mutation_prompt, generate_new_mutation_prompts
-from thinking_styles import get_random_thinking_style, generate_new_thinking_styles
+# Import the new mutate_prompt function
+from mutator import mutate_prompt
+
+# The following imports are now handled within mutator.py
+# from mutation_prompts import get_random_mutation_prompt
+# from thinking_styles import get_random_thinking_style
+
 
 def load_fitness_evaluator_class(file_path: str) -> type:
     """
@@ -76,6 +81,11 @@ def run_ga(
         temperature_fitness (float): Temperature for LLM calls within the fitness evaluator.
         output_file_path (str): Path to the JSON file where GA results will be saved.
     """
+    # Ensure population size is even for pairing
+    if pop_size % 2 != 0:
+        print(f"Warning: Population size {pop_size} is odd. Adjusting to {pop_size + 1} for pairing.")
+        pop_size += 1
+
     print(f"\n--- Starting Promptbreeder GA for task: '{task_description}' ---")
     print(f"Population Size: {pop_size}, Max Generations: {max_gens}")
     print(f"GA LLM Model: {llm_ga_model_name}, Fitness LLM Model: {llm_fitness_model_name}")
@@ -104,7 +114,8 @@ def run_ga(
 
     # --- Initial Population Generation ---
     population: List[str] = []
-    #population.append(initial_seed_prompt) # Add the user-provided seed prompt
+    # The initial_seed_prompt will be one of the generated prompts if the LLM is good,
+    # or a fallback. We'll generate pop_size prompts directly.
 
     print("\nGenerating initial population...")
     initial_gen_system_message = "You are a helpful assistant. Generate a concise and effective instruction."
@@ -120,8 +131,8 @@ def run_ga(
         if generated_prompt:
             population.append(generated_prompt.strip())
         else:
-            # Fallback if LLM fails to generate: duplicate seed or a default
-            population.append(initial_seed_prompt + f" (variant {i+1})")
+            # Fallback if LLM fails to generate: use the initial seed prompt
+            population.append(initial_seed_prompt + f" (initial_gen_fallback_{i+1})")
             print(f"Warning: LLM failed to generate initial prompt {i+1}, using fallback.")
 
     # Ensure population size is correct, even with potential LLM failures
@@ -187,54 +198,46 @@ def run_ga(
         if gen == max_gens - 1:
             break # Last generation, no need to create next population
 
-        # 2. Selection (Binary Tournament) and Mutation to create next generation
+        # 2. Selection (Pairing and Winners) and Mutation to create next generation
         new_population: List[str] = []
+        
+        # Shuffle the evaluated population to create random pairs for tournament
+        random.shuffle(evaluated_population)
+        
+        print("Creating next generation through pairing, binary tournament, parent copying, and mutation...")
+        # Iterate through pairs
+        for i in range(0, pop_size, 2):
+            # Ensure we don't go out of bounds if pop_size was adjusted or odd (though we force even)
+            if i + 1 >= len(evaluated_population):
+                break
 
-        # Elitism: Carry over the top 1 or 2 prompts directly
-        num_elite = min(2, pop_size // 5, len(evaluated_population)) # Max 2 elite, or 20% of pop, or available
-        for i in range(num_elite):
-            new_population.append(evaluated_population[i][0])
-        if num_elite > 0:
-            print(f"Carrying over {num_elite} elite prompts.")
-
-        print("Creating next generation through binary tournament and mutation...")
-        while len(new_population) < pop_size:
-            # Select two random individuals for tournament
-            candidate1 = random.choice(evaluated_population)
-            candidate2 = random.choice(evaluated_population)
+            candidate1 = evaluated_population[i]
+            candidate2 = evaluated_population[i+1]
 
             # Winner is the one with higher fitness
             winner_prompt = candidate1[0] if candidate1[1] >= candidate2[1] else candidate2[0]
 
-            # Mutate the winner
-            mutation_prompt = get_random_mutation_prompt()
-            thinking_style = get_random_thinking_style()
+            # 1. Copy the winner directly to the new population
+            new_population.append(winner_prompt)
 
-            mutation_instruction = (
-                f"{thinking_style}\n"
-                f"{mutation_prompt}\n"
-                f"Modify the following instruction based on the task '{task_description}':\n"
-                f"Original instruction: \"{winner_prompt}\"\n"
-                f"Output only the modified instruction, without any preamble or markdown."
-            )
-
-            mutated_prompt = call_llm(
-                llm_ga_client,
-                mutation_instruction,
-                system_message="You are a creative and precise prompt modifier. Your task is to transform instructions as requested.",
+            # 2. Mutate the winner to create one offspring using the new mutator module
+            mutated_prompt = mutate_prompt(
+                llm_client=llm_ga_client,
+                original_prompt=winner_prompt,
+                task_description=task_description,
                 temperature=temperature_ga
             )
 
-            if mutated_prompt:
-                new_population.append(mutated_prompt.strip())
-            else:
-                # Fallback if mutation fails: add the winner again or duplicate an existing prompt
-                new_population.append(winner_prompt)
-                print(f"Warning: LLM failed to mutate prompt, adding winner again as fallback.")
+            # The mutate_prompt function already handles returning original on failure and stripping
+            new_population.append(mutated_prompt)
+            if mutated_prompt == winner_prompt: # Check if fallback was used
+                print(f"  Note: Mutation of '{winner_prompt[:50]}...' failed, used winner as offspring fallback.")
 
-        population = new_population[:pop_size] # Ensure exact population size
+
+        population = new_population[:pop_size] # Ensure exact population size if there were fallbacks
 
     print("\n--- GA Complete ---")
+    print("\nFinal Population:")
     for i, p in enumerate(population):
         print(f"{i+1}. {p}")
     print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness}):\n{best_overall_prompt}")
@@ -256,11 +259,11 @@ if __name__ == '__main__':
     parser.add_argument("--task", type=str, required=True,
                         help="The high-level task description for which prompts are being evolved (e.g., 'print 1s').")
     parser.add_argument("--seed_prompt", type=str, default="Print a sequence of ones.",
-                        help="The initial seed prompt to start the evolution.")
+                        help="The initial seed prompt used as a fallback if LLM generation fails.")
     parser.add_argument("--max_gens", type=int, default=5,
                         help="Maximum number of generations for the GA.")
-    parser.add_argument("--pop_size", type=int, default=5,
-                        help="Size of the prompt population.")
+    parser.add_argument("--pop_size", type=int, default=10,
+                        help="Size of the prompt population (will be adjusted to even if odd).")
     parser.add_argument("--fitness_fn", type=str, required=True,
                         help="Path to the Python file containing the 'FitnessEvaluator' class (e.g., 'fitness_functions/all_ones.py').")
     parser.add_argument("--llm_ga_model", type=str, default="qwen3:0.6b",
