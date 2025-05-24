@@ -2,6 +2,7 @@
 import random
 import importlib.util
 import sys
+import json # Import json for saving data
 from typing import List, Callable, Tuple, Any
 from ollama import Client # For type hinting
 
@@ -27,10 +28,10 @@ def load_fitness_evaluator_class(file_path: str) -> type:
     spec = importlib.util.spec_from_file_location("fitness_module", file_path)
     if spec is None:
         raise FileNotFoundError(f"Could not find module specification for {file_path}")
-    
+
     module = importlib.util.module_from_spec(spec)
     sys.modules["fitness_module"] = module
-    
+
     try:
         spec.loader.exec_module(module)
     except Exception as e:
@@ -39,7 +40,7 @@ def load_fitness_evaluator_class(file_path: str) -> type:
 
     if not hasattr(module, 'FitnessEvaluator') or not isinstance(getattr(module, 'FitnessEvaluator'), type):
         raise AttributeError(f"The file {file_path} must define a class named 'FitnessEvaluator'.")
-    
+
     print(f"Successfully loaded FitnessEvaluator class from: {file_path}")
     return module.FitnessEvaluator
 
@@ -53,7 +54,8 @@ def run_ga(
     max_gens: int = 20,
     ollama_host: str = 'http://localhost:11434',
     temperature_ga: float = 0.7,
-    temperature_fitness: float = 0.1 # Lower temp for more deterministic fitness evaluation
+    temperature_fitness: float = 0.1, # Lower temp for more deterministic fitness evaluation
+    output_file_path: str = "ga_results.json" # New parameter for output file
 ):
     """
     Runs the Genetic Algorithm for prompt evolution.
@@ -72,10 +74,12 @@ def run_ga(
         ollama_host (str): The host URL for the Ollama server.
         temperature_ga (float): Temperature for LLM calls during GA operations (mutation, initial gen).
         temperature_fitness (float): Temperature for LLM calls within the fitness evaluator.
+        output_file_path (str): Path to the JSON file where GA results will be saved.
     """
     print(f"\n--- Starting Promptbreeder GA for task: '{task_description}' ---")
     print(f"Population Size: {pop_size}, Max Generations: {max_gens}")
     print(f"GA LLM Model: {llm_ga_model_name}, Fitness LLM Model: {llm_fitness_model_name}")
+    print(f"Results will be saved to: {output_file_path}")
 
     # Initialize LLM client for GA operations
     try:
@@ -119,7 +123,7 @@ def run_ga(
             # Fallback if LLM fails to generate: duplicate seed or a default
             population.append(initial_seed_prompt + f" (variant {i+1})")
             print(f"Warning: LLM failed to generate initial prompt {i+1}, using fallback.")
-    
+
     # Ensure population size is correct, even with potential LLM failures
     population = population[:pop_size]
     print(f"Initial population size: {len(population)}")
@@ -129,10 +133,11 @@ def run_ga(
     # --- Genetic Algorithm Loop ---
     best_overall_prompt = initial_seed_prompt
     highest_overall_fitness = -float('inf')
+    all_generations_data = [] # List to store data for all generations
 
     for gen in range(max_gens):
         print(f"\n--- Generation {gen + 1}/{max_gens} ---")
-        
+
         # Call new_generation hook on the fitness evaluator
         try:
             fitness_evaluator.new_generation()
@@ -168,12 +173,23 @@ def run_ga(
             best_overall_prompt = current_best_prompt
             print(f"New overall best prompt found!")
 
+        # Store generation data
+        generation_data = {
+            "generation": gen + 1,
+            "population_size": len(population),
+            "current_population": population,
+            "evaluated_population": [{"prompt": p, "fitness": f} for p, f in evaluated_population],
+            "best_prompt_this_gen": current_best_prompt,
+            "highest_fitness_this_gen": current_highest_fitness
+        }
+        all_generations_data.append(generation_data)
+
         if gen == max_gens - 1:
             break # Last generation, no need to create next population
 
         # 2. Selection (Binary Tournament) and Mutation to create next generation
         new_population: List[str] = []
-        
+
         # Elitism: Carry over the top 1 or 2 prompts directly
         num_elite = min(2, pop_size // 5, len(evaluated_population)) # Max 2 elite, or 20% of pop, or available
         for i in range(num_elite):
@@ -201,7 +217,7 @@ def run_ga(
                 f"Original instruction: \"{winner_prompt}\"\n"
                 f"Output only the modified instruction, without any preamble or markdown."
             )
-            
+
             mutated_prompt = call_llm(
                 llm_ga_client,
                 mutation_instruction,
@@ -222,6 +238,15 @@ def run_ga(
     for i, p in enumerate(population):
         print(f"{i+1}. {p}")
     print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness}):\n{best_overall_prompt}")
+
+    # Save all generations data to a JSON file
+    try:
+        with open(output_file_path, 'w', encoding='utf-8') as f:
+            json.dump(all_generations_data, f, indent=4, ensure_ascii=False)
+        print(f"GA results saved to {output_file_path}")
+    except Exception as e:
+        print(f"Error saving GA results to {output_file_path}: {e}")
+
     return best_overall_prompt, highest_overall_fitness
 
 if __name__ == '__main__':
@@ -248,11 +273,13 @@ if __name__ == '__main__':
                         help="Temperature for LLM calls during GA operations (mutation, initial gen).")
     parser.add_argument("--temp_fitness", type=float, default=0.1,
                         help="Temperature for LLM calls within the fitness evaluator (lower for determinism).")
+    parser.add_argument("--output_file", type=str, default="ga_results.json",
+                        help="Path to the JSON file to save GA results.")
 
     args = parser.parse_args()
 
     # Example usage:
-    # python ga.py --task="print 1s" --seed_prompt="Generate a string of ones." --max_gens=3 --pop_size=4 --fitness_fn="fitness_functions/all_ones.py" --llm_ga_model="qwen3:0.6b" --llm_fitness_model="qwen3:0.6b"
+    # python ga.py --task="print 1s" --seed_prompt="Generate a string of ones." --max_gens=3 --pop_size=4 --fitness_fn="fitness_functions/all_ones.py" --llm_ga_model="qwen3:0.6b" --llm_fitness_model="qwen3:0.6b" --output_file="my_ga_run.json"
 
     best_prompt, best_fitness = run_ga(
         task_description=args.task,
@@ -264,5 +291,6 @@ if __name__ == '__main__':
         max_gens=args.max_gens,
         ollama_host=args.ollama_host,
         temperature_ga=args.temp_ga,
-        temperature_fitness=args.temp_fitness
+        temperature_fitness=args.temp_fitness,
+        output_file_path=args.output_file
     )

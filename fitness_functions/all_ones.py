@@ -73,10 +73,10 @@ class FitnessEvaluator:
                 temperature=self.temperature # Use the dedicated fitness temperature
             )
             fitness_score = llm_response.count("1")
-            print("--- EVAL PROMPT ---")
-            print(prompt)
-            print(f"--- RESPONSE (fit={fitness_score}) ---")
-            print(llm_response)
+            # print("--- EVAL PROMPT ---")
+            # print(prompt)
+            # print(f"--- RESPONSE (fit={fitness_score}) ---")
+            # print(llm_response)
             # Count the occurrences of '1' in the LLM's response
             return fitness_score
         except Exception as e:
