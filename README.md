@@ -1,6 +1,6 @@
 # Minimal Promptbreeder Implementation
 
-This repository contains a minimal Python implementation of the Promptbreeder concept, a self-referential self-improvement method for Large Language Models (LLMs) that evolves prompts for a given domain. Inspired by the [Promptbreeder paper](https://arxiv.org/pdf/2309.16797), this project demonstrates the core ideas of using a genetic algorithm to evolve task-specific prompts and their associated mutation instructions.
+This repository contains a minimal Python implementation of the Promptbreeder concept, a self-referential self-improvement method for Large Language Models (LLMs) that evolves prompts for a given domain. Inspired by the [Promptbreeder paper](https://proceedings.mlr.press/v235/fernando24a.html), this project demonstrates the core ideas of using a genetic algorithm to evolve task-specific prompts and their associated mutation instructions.
 
 ## Features
 
