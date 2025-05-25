@@ -58,7 +58,8 @@ def run_ga(
     ollama_host: str = 'http://localhost:11434',
     temperature_ga: float = 0.7,
     temperature_fitness: float = 0.1, # Lower temp for more deterministic fitness evaluation
-    output_file_path: str = "ga_results.json" # New parameter for output file
+    output_file_path: str = "ga_results.json", # New parameter for output file
+    max_prompt_length: int = 256 # New parameter for maximum prompt length
 ):
     """
     Runs the Genetic Algorithm for prompt evolution.
@@ -78,6 +79,7 @@ def run_ga(
         temperature_ga (float): Temperature for LLM calls during GA operations (mutation, initial gen).
         temperature_fitness (float): Temperature for LLM calls within the fitness evaluator.
         output_file_path (str): Path to the JSON file where GA results will be saved.
+        max_prompt_length (int): Maximum length for generated prompts (passed to num_predict).
     """
     # Ensure population size is even for pairing
     if pop_size % 2 != 0:
@@ -88,6 +90,7 @@ def run_ga(
     print(f"Population Size: {pop_size}, Max Generations: {max_gens}")
     print(f"GA LLM Model: {llm_ga_model_name}, Fitness LLM Model: {llm_fitness_model_name}")
     print(f"Results will be saved to: {output_file_path}")
+    print(f"Max Prompt Length: {max_prompt_length} characters.")
 
     # Initialize LLM client for GA operations
     try:
@@ -123,7 +126,8 @@ def run_ga(
             llm_ga_client,
             prompt_request,
             system_message=initial_gen_system_message,
-            temperature=temperature_ga
+            temperature=temperature_ga,
+            num_predict=max_prompt_length # Pass max_prompt_length here
         )
         # Choose an initial mutation prompt for this task prompt
         initial_mutation_prompt = random.choice(INITIAL_MUTATION_PROMPTS)
@@ -144,15 +148,15 @@ def run_ga(
     # --- Genetic Algorithm Loop ---
     best_overall_task_prompt = initial_seed_prompt
     best_overall_mutation_prompt = random.choice(INITIAL_MUTATION_PROMPTS) # Initialize with a random one
-    highest_overall_fitness = -float('inf')
+    highest_overall_fitness = -float('inf') # Changed to float
     all_generations_data = [] # List to store data for all generations
 
     for gen in range(max_gens):
         print(f"\n--- Generation {gen + 1}/{max_gens} ---")
 
-        # Call new_generation hook on the fitness evaluator
+        # Call new_generation hook on the fitness evaluator, passing the current population
         try:
-            fitness_evaluator.new_generation()
+            fitness_evaluator.new_generation(population) # <<-- IMPORTANT CHANGE HERE: pass population
             print("Fitness evaluator prepared for new generation.")
         except AttributeError:
             # new_generation is optional, so handle if it doesn't exist
@@ -161,25 +165,25 @@ def run_ga(
             print(f"Error calling new_generation on fitness evaluator: {e}")
 
         # evaluated_population now stores (task_prompt, mutation_prompt, fitness)
-        evaluated_population: List[Tuple[str, str, int]] = []
+        evaluated_population: List[Tuple[str, str, float]] = [] # Changed fitness type to float
 
         # 1. Evaluation
         print("Evaluating population fitness...")
         for i, (task_prompt, mutation_prompt) in enumerate(population):
             try:
                 # Call the get_fitness method on the instantiated evaluator with the task prompt
-                fitness_score = fitness_evaluator.get_fitness(task_prompt)
+                fitness_score = fitness_evaluator.get_fitness(task_prompt) # Will now return float
                 evaluated_population.append((task_prompt, mutation_prompt, fitness_score))
-                print(f"  Prompt {i+1} (Fitness: {fitness_score}): Task: {task_prompt[:80]}... | Mutator: {mutation_prompt[:50]}...")
+                print(f"  Prompt {i+1} (Fitness: {fitness_score:.4f}): Task: {task_prompt[:80]}... | Mutator: {mutation_prompt[:50]}...") # Format for display
             except Exception as e:
-                print(f"Error evaluating prompt '{task_prompt[:50]}...': {e}. Assigning fitness 0.")
-                evaluated_population.append((task_prompt, mutation_prompt, 0)) # Assign 0 fitness on error
+                print(f"Error evaluating prompt '{task_prompt[:50]}...': {e}. Assigning fitness 0.0.") # Changed to 0.0
+                evaluated_population.append((task_prompt, mutation_prompt, 0.0)) # Assign 0.0 fitness on error
 
         # Sort by fitness (descending)
         evaluated_population.sort(key=lambda x: x[2], reverse=True)
 
         current_best_task_prompt, current_best_mutation_prompt, current_highest_fitness = evaluated_population[0]
-        print(f"\nGeneration {gen + 1} Best Prompt (Fitness: {current_highest_fitness}):")
+        print(f"\nGeneration {gen + 1} Best Prompt (Fitness: {current_highest_fitness:.4f}):") # Format for display
         print(f"  Task: {current_best_task_prompt}")
         print(f"  Mutator: {current_best_mutation_prompt}")
 
@@ -206,10 +210,10 @@ def run_ga(
 
         # 2. Selection (Pairing and Winners) and Mutation to create next generation
         new_population: List[Tuple[str, str]] = []
-        
+
         # Shuffle the evaluated population to create random pairs for tournament
         random.shuffle(evaluated_population)
-        
+
         print("Creating next generation through pairing, binary tournament, parent copying, and mutation...")
         # Iterate through pairs
         for i in range(0, pop_size, 2):
@@ -238,7 +242,8 @@ def run_ga(
                 task_description=task_description,
                 fitness_evaluator=fitness_evaluator, # Pass the fitness evaluator for quick check
                 temperature_ga=temperature_ga,
-                temperature_fitness=temperature_fitness # Pass fitness temp for quick check
+                temperature_fitness=temperature_fitness, # Pass fitness temp for quick check
+                max_prompt_length=max_prompt_length # Pass max_prompt_length here
             )
 
             # The mutate_prompt function already handles returning original on failure and stripping
@@ -253,7 +258,7 @@ def run_ga(
     print("\nFinal Population:")
     for i, (tp, mp) in enumerate(population):
         print(f"{i+1}. Task: {tp[:80]}... | Mutator: {mp[:50]}...")
-    print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness}):")
+    print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness:.4f}):") # Format for display
     print(f"  Task Prompt: {best_overall_task_prompt}")
     print(f"  Mutation Prompt: {best_overall_mutation_prompt}")
 
@@ -294,11 +299,13 @@ if __name__ == '__main__':
                         help="Temperature for LLM calls within the fitness evaluator (lower for determinism).")
     parser.add_argument("--output_file", type=str, default="ga_results.json",
                         help="Path to the JSON file to save GA results.")
+    parser.add_argument("--max_prompt_length", type=int, default=256,
+                        help="Maximum length for generated prompts (number of tokens/characters).")
 
     args = parser.parse_args()
 
-    # Example usage:
-    # python ga.py --task="print 1s" --seed_prompt="Generate a string of ones." --max_gens=3 --pop_size=4 --fitness_fn="fitness_functions/all_ones.py" --llm_ga_model="qwen3:0.6b" --llm_fitness_model="qwen3:0.6b" --output_file="my_ga_run.json"
+    # Example usage with the new diversity fitness function:
+    # python ga.py --task="diverse short stories" --seed_prompt="Write a simple story." --max_gens=3 --pop_size=4 --fitness_fn="fitness_functions/diversity_fitness.py" --llm_ga_model="qwen3:0.6b" --llm_fitness_model="qwen3:0.6b" --output_file="my_diversity_run.json"
 
     best_task_prompt, best_mutation_prompt, best_fitness = run_ga(
         task_description=args.task,
@@ -311,5 +318,7 @@ if __name__ == '__main__':
         ollama_host=args.ollama_host,
         temperature_ga=args.temp_ga,
         temperature_fitness=args.temp_fitness,
-        output_file_path=args.output_file
+        output_file_path=args.output_file,
+        max_prompt_length=args.max_prompt_length
     )
+

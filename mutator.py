@@ -23,7 +23,8 @@ def mutate_prompt(
     task_description: str,
     fitness_evaluator: Any, # Instance of FitnessEvaluator from ga.py
     temperature_ga: float,
-    temperature_fitness: float
+    temperature_fitness: float,
+    max_prompt_length: int # New parameter for maximum prompt length
 ) -> Tuple[str, str]:
     """
     Mutates either the task prompt or its coupled mutation prompt.
@@ -38,6 +39,7 @@ def mutate_prompt(
         fitness_evaluator (Any): An instance of the main GA's FitnessEvaluator for quick checks.
         temperature_ga (float): Temperature for LLM calls during GA operations (mutation of task/mutator prompts).
         temperature_fitness (float): Temperature for LLM calls within the quick check for hypermutation.
+        max_prompt_length (int): Maximum length for generated prompts (passed to num_predict).
 
     Returns:
         Tuple[str, str]: A tuple containing the new (task_prompt, mutation_prompt).
@@ -50,13 +52,13 @@ def mutate_prompt(
     if random.random() < HYPERMUTATION_PROB:
         # --- Perform Hypermutation (mutate the mutation prompt) ---
         print(f"  Performing Hypermutation on mutation prompt: '{current_mutation_prompt[:50]}...'")
-        
+
         # original_mp_fitness is now directly from current_fitness of the task prompt
         # because the quick check evaluates how well the MP generates a *task prompt*
         # that performs. The current task prompt's fitness is our baseline.
         original_mp_fitness_baseline = current_fitness
         mutated_mp_candidate = ""
-        
+
         # Option 1: Create a new mutator prompt from scratch (like initial population)
         if random.random() < NEW_MUTATOR_PROMPT_PROB:
             print("    Generating new mutation prompt from scratch.")
@@ -68,7 +70,8 @@ def mutate_prompt(
                 llm_client,
                 mp_gen_instruction,
                 system_message="You are a prompt engineering assistant. Generate a concise and actionable prompt mutation instruction.",
-                temperature=temperature_ga
+                temperature=temperature_ga,
+                num_predict=max_prompt_length # Pass max_prompt_length here
             ).strip()
         else:
             # Option 2: Mutate the existing mutator prompt
@@ -85,7 +88,8 @@ def mutate_prompt(
                 llm_client,
                 hypermutation_instruction,
                 system_message="You are a meta-prompt modifier. Your task is to creatively alter instructions that guide other prompts.",
-                temperature=temperature_ga
+                temperature=temperature_ga,
+                num_predict=max_prompt_length # Pass max_prompt_length here
             ).strip()
 
         if not mutated_mp_candidate:
@@ -111,7 +115,8 @@ def mutate_prompt(
                         f"Output only the modified instruction, without any preamble or markdown."
                     ),
                     system_message="You are a creative and precise prompt modifier. Your task is to transform instructions as requested.",
-                    temperature=temperature_ga # Use GA temp for this internal mutation
+                    temperature=temperature_ga, # Use GA temp for this internal mutation
+                    num_predict=max_prompt_length # Pass max_prompt_length here
                 )
                 temp_task_prompt_mutated_mp = temp_task_prompt_mutated_mp.strip()
                 mutated_mp_fitness = fitness_evaluator.get_fitness(temp_task_prompt_mutated_mp)
@@ -149,7 +154,8 @@ def mutate_prompt(
             llm_client,
             zeroth_order_instruction,
             system_message="You are a helpful assistant. Generate a concise and effective instruction.",
-            temperature=temperature_ga
+            temperature=temperature_ga,
+            num_predict=max_prompt_length # Pass max_prompt_length here
         )
         if mutated_task_prompt_result:
             new_task_prompt = mutated_task_prompt_result.strip()
@@ -170,7 +176,8 @@ def mutate_prompt(
             llm_client,
             mutation_instruction,
             system_message="You are a creative and precise prompt modifier. Your task is to transform instructions as requested.",
-            temperature=temperature_ga
+            temperature=temperature_ga,
+            num_predict=max_prompt_length # Pass max_prompt_length here
         )
 
         if mutated_task_prompt_result:
@@ -214,7 +221,7 @@ if __name__ == '__main__':
             except Exception as e:
                 print(f"    Dummy Eval Error: {e}. Returning 0 fitness.")
                 return 0
-        
+
         def new_generation(self):
             pass # No specific setup needed for dummy
 
@@ -243,7 +250,8 @@ if __name__ == '__main__':
             task_description=test_task,
             fitness_evaluator=dummy_fitness_evaluator,
             temperature_ga=test_temp_ga,
-            temperature_fitness=test_temp_fitness
+            temperature_fitness=test_temp_fitness,
+            max_prompt_length=256 # Pass a dummy max_prompt_length for testing
         )
         print(f"\nResulting Task Prompt: '{mutated_tp}'")
         print(f"Resulting Mutation Prompt: '{mutated_mp}'")
@@ -258,3 +266,4 @@ if __name__ == '__main__':
 
     except Exception as e:
         print(f"Could not run mutator test. Ensure Ollama server is running and '{test_llm_model}' is pulled. Error: {e}")
+

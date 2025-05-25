@@ -71,13 +71,15 @@ python ga.py [OPTIONS]
 * --temp_ga <float> (Default: 0.7): Temperature for LLM calls during GA operations (higher for more creativity in mutations).
 * --temp_fitness <float> (Default: 0.1): Temperature for LLM calls within the fitness evaluator (lower for more deterministic and consistent evaluation).
 * --output_file <path> (Default: "ga_results.json"): Path to the JSON file where all GA results (population, fitness per generation) will be saved.
+* --max_prompt_length <int> (Default: 256): Maximum length for generated prompts (number of tokens/characters).
 
 ```bash
 python ga.py \
     --task="print 1s" \
-    --seed_prompt="Generate a string of exactly 5 ones." \
+    --seed_prompt="Generate a string of ones." \
     --max_gens=3 \
     --pop_size=4 \
+    --max_prompt_length=100 \
     --fitness_fn="fitness_functions/all_ones.py" \
     --llm_ga_model="qwen3:0.6b" \
     --llm_fitness_model="qwen3:0.6b" \
