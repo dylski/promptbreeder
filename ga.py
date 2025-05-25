@@ -10,10 +10,8 @@ from ollama import Client # For type hinting
 from llm_utils import call_llm, get_llm_client
 # Import the new mutate_prompt function
 from mutator import mutate_prompt
-
-# The following imports are now handled within mutator.py
-# from mutation_prompts import get_random_mutation_prompt
-# from thinking_styles import get_random_thinking_style
+# Import INITIAL_MUTATION_PROMPTS for initial population seeding
+from mutation_prompts import INITIAL_MUTATION_PROMPTS
 
 
 def load_fitness_evaluator_class(file_path: str) -> type:
@@ -113,36 +111,39 @@ def run_ga(
         return
 
     # --- Initial Population Generation ---
-    population: List[str] = []
-    # The initial_seed_prompt will be one of the generated prompts if the LLM is good,
-    # or a fallback. We'll generate pop_size prompts directly.
+    # Population now stores tuples of (task_prompt, mutation_prompt)
+    population: List[Tuple[str, str]] = []
 
     print("\nGenerating initial population...")
     initial_gen_system_message = "You are a helpful assistant. Generate a concise and effective instruction."
     for i in range(pop_size):
-        # Generate diverse initial prompts related to the task
+        # Generate a task prompt
         prompt_request = f"Generate a distinct and effective instruction related to the task: '{task_description}'. The instruction should be ready for an LLM to follow."
-        generated_prompt = call_llm(
+        generated_task_prompt = call_llm(
             llm_ga_client,
             prompt_request,
             system_message=initial_gen_system_message,
             temperature=temperature_ga
         )
-        if generated_prompt:
-            population.append(generated_prompt.strip())
+        # Choose an initial mutation prompt for this task prompt
+        initial_mutation_prompt = random.choice(INITIAL_MUTATION_PROMPTS)
+
+        if generated_task_prompt:
+            population.append((generated_task_prompt.strip(), initial_mutation_prompt))
         else:
-            # Fallback if LLM fails to generate: use the initial seed prompt
-            population.append(initial_seed_prompt + f" (initial_gen_fallback_{i+1})")
-            print(f"Warning: LLM failed to generate initial prompt {i+1}, using fallback.")
+            # Fallback if LLM fails to generate: use the initial seed prompt with a random initial mutator
+            population.append((initial_seed_prompt + f" (initial_gen_fallback_{i+1})", initial_mutation_prompt))
+            print(f"Warning: LLM failed to generate initial task prompt {i+1}, using fallback.")
 
     # Ensure population size is correct, even with potential LLM failures
     population = population[:pop_size]
     print(f"Initial population size: {len(population)}")
-    for i, p in enumerate(population):
-        print(f"{i+1}. {p}")
+    for i, (tp, mp) in enumerate(population):
+        print(f"{i+1}. Task: {tp[:80]}... | Mutator: {mp[:50]}...")
 
     # --- Genetic Algorithm Loop ---
-    best_overall_prompt = initial_seed_prompt
+    best_overall_task_prompt = initial_seed_prompt
+    best_overall_mutation_prompt = random.choice(INITIAL_MUTATION_PROMPTS) # Initialize with a random one
     highest_overall_fitness = -float('inf')
     all_generations_data = [] # List to store data for all generations
 
@@ -159,38 +160,43 @@ def run_ga(
         except Exception as e:
             print(f"Error calling new_generation on fitness evaluator: {e}")
 
-        evaluated_population: List[Tuple[str, int]] = [] # List of (prompt, fitness) tuples
+        # evaluated_population now stores (task_prompt, mutation_prompt, fitness)
+        evaluated_population: List[Tuple[str, str, int]] = []
 
         # 1. Evaluation
         print("Evaluating population fitness...")
-        for i, prompt in enumerate(population):
+        for i, (task_prompt, mutation_prompt) in enumerate(population):
             try:
-                # Call the get_fitness method on the instantiated evaluator
-                fitness_score = fitness_evaluator.get_fitness(prompt)
-                evaluated_population.append((prompt, fitness_score))
-                print(f"  Prompt {i+1} (Fitness: {fitness_score}): {prompt[:80]}...")
+                # Call the get_fitness method on the instantiated evaluator with the task prompt
+                fitness_score = fitness_evaluator.get_fitness(task_prompt)
+                evaluated_population.append((task_prompt, mutation_prompt, fitness_score))
+                print(f"  Prompt {i+1} (Fitness: {fitness_score}): Task: {task_prompt[:80]}... | Mutator: {mutation_prompt[:50]}...")
             except Exception as e:
-                print(f"Error evaluating prompt '{prompt[:50]}...': {e}. Assigning fitness 0.")
-                evaluated_population.append((prompt, 0)) # Assign 0 fitness on error
+                print(f"Error evaluating prompt '{task_prompt[:50]}...': {e}. Assigning fitness 0.")
+                evaluated_population.append((task_prompt, mutation_prompt, 0)) # Assign 0 fitness on error
 
         # Sort by fitness (descending)
-        evaluated_population.sort(key=lambda x: x[1], reverse=True)
+        evaluated_population.sort(key=lambda x: x[2], reverse=True)
 
-        current_best_prompt, current_highest_fitness = evaluated_population[0]
-        print(f"\nGeneration {gen + 1} Best Prompt (Fitness: {current_highest_fitness}):\n{current_best_prompt}")
+        current_best_task_prompt, current_best_mutation_prompt, current_highest_fitness = evaluated_population[0]
+        print(f"\nGeneration {gen + 1} Best Prompt (Fitness: {current_highest_fitness}):")
+        print(f"  Task: {current_best_task_prompt}")
+        print(f"  Mutator: {current_best_mutation_prompt}")
+
 
         if current_highest_fitness > highest_overall_fitness:
             highest_overall_fitness = current_highest_fitness
-            best_overall_prompt = current_best_prompt
+            best_overall_task_prompt = current_best_task_prompt
+            best_overall_mutation_prompt = current_best_mutation_prompt
             print(f"New overall best prompt found!")
 
         # Store generation data
         generation_data = {
             "generation": gen + 1,
             "population_size": len(population),
-            "current_population": population,
-            "evaluated_population": [{"prompt": p, "fitness": f} for p, f in evaluated_population],
-            "best_prompt_this_gen": current_best_prompt,
+            "current_population": [{"task_prompt": tp, "mutation_prompt": mp} for tp, mp in population],
+            "evaluated_population": [{"task_prompt": tp, "mutation_prompt": mp, "fitness": f} for tp, mp, f in evaluated_population],
+            "best_prompt_this_gen": {"task_prompt": current_best_task_prompt, "mutation_prompt": current_best_mutation_prompt},
             "highest_fitness_this_gen": current_highest_fitness
         }
         all_generations_data.append(generation_data)
@@ -199,7 +205,7 @@ def run_ga(
             break # Last generation, no need to create next population
 
         # 2. Selection (Pairing and Winners) and Mutation to create next generation
-        new_population: List[str] = []
+        new_population: List[Tuple[str, str]] = []
         
         # Shuffle the evaluated population to create random pairs for tournament
         random.shuffle(evaluated_population)
@@ -211,36 +217,46 @@ def run_ga(
             if i + 1 >= len(evaluated_population):
                 break
 
-            candidate1 = evaluated_population[i]
-            candidate2 = evaluated_population[i+1]
+            candidate1 = evaluated_population[i] # (task_prompt, mutation_prompt, fitness)
+            candidate2 = evaluated_population[i+1] # (task_prompt, mutation_prompt, fitness)
 
             # Winner is the one with higher fitness
-            winner_prompt = candidate1[0] if candidate1[1] >= candidate2[1] else candidate2[0]
+            winner_entry = candidate1 if candidate1[2] >= candidate2[2] else candidate2 # winner_entry is (tp, mp, f)
+            winner_task_prompt = winner_entry[0]
+            winner_mutation_prompt = winner_entry[1]
+            winner_fitness = winner_entry[2] # Get winner's fitness for quick check in mutator
 
-            # 1. Copy the winner directly to the new population
-            new_population.append(winner_prompt)
+            # 1. Copy the winner's (task_prompt, mutation_prompt) pair directly to the new population
+            new_population.append((winner_task_prompt, winner_mutation_prompt))
 
-            # 2. Mutate the winner to create one offspring using the new mutator module
-            mutated_prompt = mutate_prompt(
+            # 2. Mutate the winner to create one offspring using the mutator module
+            mutated_task_prompt, mutated_mutation_prompt = mutate_prompt(
                 llm_client=llm_ga_client,
-                original_prompt=winner_prompt,
+                current_task_prompt=winner_task_prompt,
+                current_mutation_prompt=winner_mutation_prompt,
+                current_fitness=winner_fitness, # Pass winner's fitness for quick check
                 task_description=task_description,
-                temperature=temperature_ga
+                fitness_evaluator=fitness_evaluator, # Pass the fitness evaluator for quick check
+                temperature_ga=temperature_ga,
+                temperature_fitness=temperature_fitness # Pass fitness temp for quick check
             )
 
             # The mutate_prompt function already handles returning original on failure and stripping
-            new_population.append(mutated_prompt)
-            if mutated_prompt == winner_prompt: # Check if fallback was used
-                print(f"  Note: Mutation of '{winner_prompt[:50]}...' failed, used winner as offspring fallback.")
+            new_population.append((mutated_task_prompt, mutated_mutation_prompt))
+            if mutated_task_prompt == winner_task_prompt and mutated_mutation_prompt == winner_mutation_prompt:
+                print(f"  Note: Mutation of '{winner_task_prompt[:50]}...' failed, used winner as offspring fallback.")
 
 
         population = new_population[:pop_size] # Ensure exact population size if there were fallbacks
 
     print("\n--- GA Complete ---")
     print("\nFinal Population:")
-    for i, p in enumerate(population):
-        print(f"{i+1}. {p}")
-    print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness}):\n{best_overall_prompt}")
+    for i, (tp, mp) in enumerate(population):
+        print(f"{i+1}. Task: {tp[:80]}... | Mutator: {mp[:50]}...")
+    print(f"\nOverall Best Prompt (Fitness: {highest_overall_fitness}):")
+    print(f"  Task Prompt: {best_overall_task_prompt}")
+    print(f"  Mutation Prompt: {best_overall_mutation_prompt}")
+
 
     # Save all generations data to a JSON file
     try:
@@ -250,7 +266,7 @@ def run_ga(
     except Exception as e:
         print(f"Error saving GA results to {output_file_path}: {e}")
 
-    return best_overall_prompt, highest_overall_fitness
+    return best_overall_task_prompt, best_overall_mutation_prompt, highest_overall_fitness
 
 if __name__ == '__main__':
     import argparse
@@ -284,7 +300,7 @@ if __name__ == '__main__':
     # Example usage:
     # python ga.py --task="print 1s" --seed_prompt="Generate a string of ones." --max_gens=3 --pop_size=4 --fitness_fn="fitness_functions/all_ones.py" --llm_ga_model="qwen3:0.6b" --llm_fitness_model="qwen3:0.6b" --output_file="my_ga_run.json"
 
-    best_prompt, best_fitness = run_ga(
+    best_task_prompt, best_mutation_prompt, best_fitness = run_ga(
         task_description=args.task,
         initial_seed_prompt=args.seed_prompt,
         llm_ga_model_name=args.llm_ga_model,
