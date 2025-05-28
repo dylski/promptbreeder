@@ -5,8 +5,8 @@ from llm_utils import get_llm_client, call_llm # Import utility functions
 
 class FitnessEvaluator:
     """
-    A fitness evaluator for the "print 1s" task.
-    It evaluates how many '1's an LLM generates in response to a given prompt.
+    A faster 'level 0' fitness evaluator for the "print 1s" task with no LLM call.
+    It evaluates how many '1's in a given prompt.
     """
     def __init__(self, task_description: str, llm_model_name: str, ollama_host: str, temperature: float):
         """
@@ -58,30 +58,11 @@ class FitnessEvaluator:
         Returns:
             int: The fitness score (number of '1's). Returns 0 on error or if LLM client is not ready.
         """
-        if self.llm_client is None:
-            print("Error: FitnessEvaluator LLM client not initialized. Cannot evaluate prompt.")
-            return 0
-
-        # The prompt itself contains the instruction for the LLM
-        # For "print 1s", the prompt might be "Print 10 ones"
-        # The LLM's response is then evaluated.
-        try:
-            llm_response = call_llm(
-                llm_client=self.llm_client,
-                prompt=prompt + " Keep response to 100 characters.",
-                system_message="Your task is to follow the instruction precisely.",
-                temperature=self.temperature # Use the dedicated fitness temperature
-            )
-            fitness_score = llm_response.count("1")
-            # print("--- EVAL PROMPT ---")
-            # print(prompt)
-            # print(f"--- RESPONSE (fit={fitness_score}) ---")
-            # print(llm_response)
-            # Count the occurrences of '1' in the LLM's response
-            return fitness_score
-        except Exception as e:
-            print(f"Error during fitness evaluation for prompt '{prompt[:50]}...': {e}")
-            return 0 # Return 0 fitness on error
+        # The prompt itself contains 1s
+        fitness_score = prompt.count("1")
+        # print("--- EVAL PROMPT ---")
+        # print(prompt)
+        return fitness_score
 
 # This block is for direct testing of the FitnessEvaluator class
 if __name__ == '__main__':
